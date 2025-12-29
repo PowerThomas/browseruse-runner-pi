@@ -98,6 +98,41 @@ Returns `image/png` bytes for a step screenshot.
 - `200` with `content-type: image/png` if the file exists.
 - `404` if the screenshot is missing.
 
+## GET /runs/{run_id}/report
+
+Returns the generated HTML report for a run (`text/html`). The report uses
+per-step screenshot URLs instead of embedding base64 images.
+
+## POST /maintenance/cleanup
+
+Cleans old artifacts under `/app/artifacts`.
+
+Defaults:
+- `ARTIFACTS_MAX_DAYS=7`
+- `ARTIFACTS_MAX_RUNS=100`
+
+Response:
+
+```json
+{"deleted": 5, "kept": 100}
+```
+
+## Profile management
+
+- `GET /profiles` list profiles (name, last_modified, size_bytes)
+- `POST /profiles/{name}/reset` delete a profile
+- `POST /profiles/{name}/clone` with body `{"to":"newname"}`
+
+If Chrome is running in the container, profile actions return `409`.
+
+## Async jobs
+
+`/jobs` lets you start a run asynchronously while keeping the single-run lock:
+
+- `POST /jobs` with the same body as `/run`
+- `GET /jobs/{run_id}` returns status + response when done
+- `POST /jobs/{run_id}/cancel` best-effort cancel
+
 ## Health
 
 `GET /health` returns `{ "status": "ok" }`.
@@ -113,6 +148,11 @@ Returns `image/png` bytes for a step screenshot.
    - Enable "Download" to store the PNG in the binary output
 
 Each item will carry the step metadata and a binary screenshot for preview in n8n.
+
+To fetch the HTML report, add a HTTP Request node:
+- `GET /runs/{{$json.run_id}}/report`
+
+For async jobs, POST `/jobs` and poll `GET /jobs/{{$json.run_id}}` until `status` is `completed`.
 
 ## Live view (noVNC/VNC)
 
