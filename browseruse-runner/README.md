@@ -31,6 +31,8 @@ Request body:
   "url": "https://example.com",
   "profile_id": "default",
   "record_trace": true,
+  "interactive": false,
+  "keep_open_seconds": 0,
   "include_steps": true,
   "include_step_screenshots": "paths"
 }
@@ -41,6 +43,8 @@ Fields:
 - `url` (string, optional)
 - `profile_id` (string, default: `default`)
 - `record_trace` (bool, default: `true`)
+- `interactive` (bool, default: `false`) launches a headed browser for VNC/noVNC
+- `keep_open_seconds` (int, default: `0`) keeps the browser open after completion
 - `include_steps` (bool, default: `true`)
 - `include_step_screenshots` (`none` or `paths`, default: `none`)
 
@@ -52,6 +56,11 @@ Response (truncated):
   "artifacts_path": "/app/artifacts/<run_id>",
   "profile_path": "/app/profiles/default",
   "result": { "...": "..." },
+  "live_view": {
+    "vnc_host": "127.0.0.1",
+    "novnc_url": "http://127.0.0.1:7900/vnc.html",
+    "display": ":99"
+  },
   "steps": [
     {
       "step_number": 1,
@@ -104,3 +113,18 @@ Returns `image/png` bytes for a step screenshot.
    - Enable "Download" to store the PNG in the binary output
 
 Each item will carry the step metadata and a binary screenshot for preview in n8n.
+
+## Live view (noVNC/VNC)
+
+To view the live browser while a run is executing:
+
+1) Call `/run` with:
+   - `interactive=true`
+   - `keep_open_seconds` set to a short window (e.g. 20)
+2) Open the noVNC URL from the response:
+   - `http://127.0.0.1:7900/vnc.html`
+3) If connecting from another machine, use SSH port forwarding:
+
+```
+ssh -L 7900:127.0.0.1:7900 pi@<your-pi-host>
+```
