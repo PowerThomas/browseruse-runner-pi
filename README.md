@@ -108,4 +108,8 @@ Each item now includes a binary PNG screenshot for the step.
 
 ## License
 
-Add a license if you want this to be reusable by others.
+MIT License. See `LICENSE`.
+
+## Contributing
+
+See `CONTRIBUTING.md`.
