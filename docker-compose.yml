@@ -1,0 +1,23 @@
+services:
+  browseruse-runner:
+    build:
+      context: ./browseruse-runner
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      - RUNNER_API_KEY=${RUNNER_API_KEY}
+      - BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY}
+      - PROFILES_DIR=/app/profiles
+      - ARTIFACTS_DIR=/app/artifacts
+    volumes:
+      - browseruse_profiles:/app/profiles
+      - browseruse_artifacts:/app/artifacts
+    ports:
+      - "127.0.0.1:5901:5900"
+      - "127.0.0.1:7900:7900"
+    expose:
+      - "8000"
+
+volumes:
+  browseruse_profiles:
+  browseruse_artifacts:
