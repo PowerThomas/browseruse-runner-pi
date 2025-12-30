@@ -6,8 +6,10 @@ This repo contains only the runner service; it assumes n8n is already installed 
 ## What it does
 
 - Runs browser-use tasks synchronously via `POST /run`
-- Persists run artifacts and per-step screenshots
-- Exposes step list + per-step screenshot download endpoints
+- Supports async jobs with FIFO queue via `POST /jobs`
+- Persists run artifacts, per-step screenshots, and an HTML report
+- Exposes step list + per-step screenshot + report endpoints
+- Includes artifact cleanup and profile management endpoints
 - Keeps API internal-only (Docker network) and protected by `X-API-Key`
 
 ## Requirements
@@ -82,6 +84,32 @@ Returns an array of steps with `screenshot_file` when available.
 
 Downloads the screenshot for a step as `image/png`.
 
+### GET /runs/{run_id}/report
+
+Returns the generated HTML report (`text/html`).
+
+### POST /maintenance/cleanup
+
+Cleans old artifacts under `/app/artifacts`.
+
+Defaults:
+- `ARTIFACTS_MAX_DAYS=7`
+- `ARTIFACTS_MAX_RUNS=100`
+
+### Profile management
+
+- `GET /profiles` list profiles (name, last_modified, size_bytes)
+- `POST /profiles/{name}/reset` delete a profile
+- `POST /profiles/{name}/clone` with body `{"to":"newname"}`
+
+### Async jobs
+
+- `POST /jobs` with the same body as `/run`
+- `GET /jobs/{run_id}` returns status + response when done
+- `POST /jobs/{run_id}/cancel` best-effort cancel
+
+If a job is running, new jobs are queued and start automatically (FIFO).
+
 ### Errors
 
 - `401 Unauthorized`: missing or invalid `X-API-Key`
@@ -101,10 +129,27 @@ Downloads the screenshot for a step as `image/png`.
 
 Each item now includes a binary PNG screenshot for the step.
 
+To fetch the HTML report, add a HTTP Request node:
+- `GET /runs/{{$json.run_id}}/report`
+
+For async jobs, POST `/jobs` and poll `GET /jobs/{{$json.run_id}}` until `status` is `completed`.
+
 ## Project layout
 
 - `browseruse-runner/` service code
 - `browseruse-runner/README.md` endpoint details
+
+## Tests
+
+Smoke tests run inside the runner container:
+
+```
+docker compose exec -T browseruse-runner python -m unittest /app/tests/test_api_smoke.py
+```
+
+Optional tests (destructive) can be enabled via env vars:
+- `RUN_TEST_CLEANUP=1`
+- `RUN_TEST_PROFILE_MUTATION=1`
 
 ## License
 
