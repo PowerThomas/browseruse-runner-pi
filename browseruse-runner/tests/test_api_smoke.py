@@ -182,36 +182,36 @@ class RunnerSmokeTests(unittest.TestCase):
             },
         )
         self.assertEqual(status, 200)
-        payload = json.loads(raw.decode("utf-8"))
-        run_id = payload["run_id"]
+        first = json.loads(raw.decode("utf-8"))
+        first_id = first["run_id"]
 
-        busy = False
-        deadline = time.time() + 6
-        while time.time() < deadline and not busy:
-            status, _, _ = _post_json(
-                "/jobs",
-                {
-                    "task": "Open https://example.com and report the title.",
-                    "url": "https://example.com",
-                    "include_steps": False,
-                },
-            )
-            busy = status == 429
-            if not busy:
-                time.sleep(0.5)
+        status, _, raw = _post_json(
+            "/jobs",
+            {
+                "task": "Open https://example.com and report the title.",
+                "url": "https://example.com",
+                "include_steps": False,
+            },
+        )
+        self.assertEqual(status, 200)
+        second = json.loads(raw.decode("utf-8"))
+        second_id = second["run_id"]
+        self.assertEqual(second.get("status"), "queued")
 
-        self.assertTrue(busy, "expected 429 when a job is active")
-
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            status, _, raw = _request("GET", f"/jobs/{run_id}")
-            self.assertEqual(status, 200)
-            job = json.loads(raw.decode("utf-8"))
-            if job.get("status") in {"completed", "failed", "canceled"}:
-                break
+        deadline = time.time() + 180
+        finished = set()
+        while time.time() < deadline and len(finished) < 2:
+            for run_id in (first_id, second_id):
+                if run_id in finished:
+                    continue
+                status, _, raw = _request("GET", f"/jobs/{run_id}")
+                self.assertEqual(status, 200)
+                job = json.loads(raw.decode("utf-8"))
+                if job.get("status") in {"completed", "failed", "canceled"}:
+                    finished.add(run_id)
             time.sleep(2)
-        else:
-            self.fail("job did not finish before timeout")
+        if len(finished) < 2:
+            self.fail("queued jobs did not finish before timeout")
 
     def test_cleanup_optional(self):
         if os.environ.get("RUN_TEST_CLEANUP") != "1":

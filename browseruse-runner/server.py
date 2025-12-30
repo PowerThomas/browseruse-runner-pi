@@ -32,6 +32,7 @@ _job_tasks: Dict[str, asyncio.Task] = {}
 _job_lock_owner: Optional[str] = None
 _job_active_agents: Dict[str, Dict[str, Optional[Agent]]] = {}
 _job_canceled: set[str] = set()
+_job_queue: list[Dict[str, Any]] = []
 
 
 class RunRequest(BaseModel):
@@ -448,6 +449,34 @@ async def _build_run_response(
     )
 
 
+async def _start_job(run_id: str, req: RunRequest) -> None:
+    global _job_lock_owner
+    try:
+        profile_path, artifacts_path = _prepare_run_paths(req, run_id)
+    except HTTPException as exc:
+        _write_job_status(run_id, "failed", error=str(exc.detail))
+        return
+    await _lock.acquire()
+    _job_lock_owner = run_id
+    task = asyncio.create_task(_run_job_task(run_id, req, profile_path, artifacts_path))
+    _job_tasks[run_id] = task
+
+
+def _dequeue_job(run_id: str) -> bool:
+    for idx, job in enumerate(_job_queue):
+        if job["run_id"] == run_id:
+            _job_queue.pop(idx)
+            return True
+    return False
+
+
+async def _start_next_job_if_available() -> None:
+    if _lock.locked() or not _job_queue:
+        return
+    job = _job_queue.pop(0)
+    await _start_job(job["run_id"], job["req"])
+
+
 async def _run_job_task(
     run_id: str,
     req: RunRequest,
@@ -477,6 +506,7 @@ async def _run_job_task(
         if _job_lock_owner == run_id and _lock.locked():
             _lock.release()
             _job_lock_owner = None
+        await _start_next_job_if_available()
 
 
 async def _run_browseruse_task(
@@ -745,20 +775,13 @@ async def clone_profile(
 
 @app.post("/jobs")
 async def create_job(req: RunRequest, _: None = Depends(verify_api_key)) -> Dict[str, str]:
-    global _job_lock_owner
-    if _lock.locked():
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Runner is busy; try again later.",
-        )
     run_id = str(uuid.uuid4())
-    profile_path, artifacts_path = _prepare_run_paths(req, run_id)
-    await _lock.acquire()
-    _job_lock_owner = run_id
     _write_job_status(run_id, "queued")
-    task = asyncio.create_task(_run_job_task(run_id, req, profile_path, artifacts_path))
-    _job_tasks[run_id] = task
-    return {"run_id": run_id, "status": "queued"}
+    if _lock.locked() or _job_queue:
+        _job_queue.append({"run_id": run_id, "req": req})
+        return {"run_id": run_id, "status": "queued"}
+    await _start_job(run_id, req)
+    return {"run_id": run_id, "status": "running"}
 
 
 @app.get("/jobs/{run_id}")
@@ -777,6 +800,10 @@ async def cancel_job(run_id: str, _: None = Depends(verify_api_key)) -> Dict[str
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if payload.get("status") in {"completed", "failed", "canceled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job already finished")
+    if payload.get("status") == "queued" and _dequeue_job(run_id):
+        _job_canceled.add(run_id)
+        _write_job_status(run_id, "canceled")
+        return {"status": "canceled"}
     _job_canceled.add(run_id)
     _write_job_status(run_id, "canceled")
     task = _job_tasks.get(run_id)
