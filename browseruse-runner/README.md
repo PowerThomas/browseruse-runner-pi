@@ -137,6 +137,19 @@ If Chrome is running in the container, profile actions return `409`.
 
 `GET /health` returns `{ "status": "ok" }`.
 
+## Tests
+
+Smoke tests live under `browseruse-runner/tests/` and can be run inside the
+runner container:
+
+```
+docker compose exec -T browseruse-runner python -m unittest /app/tests/test_api_smoke.py
+```
+
+Optional tests (destructive) can be enabled via env vars:
+- `RUN_TEST_CLEANUP=1` (creates old artifact dirs and runs cleanup)
+- `RUN_TEST_PROFILE_MUTATION=1` (clones/resets a test profile)
+
 ## n8n usage
 
 1) Node A: HTTP Request (POST)

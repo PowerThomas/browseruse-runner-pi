@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 
 COPY server.py entrypoint.sh ./
+COPY tests ./tests
 
 RUN chmod +x /app/entrypoint.sh
 
