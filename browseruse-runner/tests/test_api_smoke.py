@@ -4,6 +4,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import threading
 
 
 BASE_URL = os.environ.get("RUNNER_BASE_URL", "http://127.0.0.1:8000")
@@ -24,6 +25,11 @@ def _request(method, path, body=None, headers=None):
             return resp.status, resp.headers, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.headers, exc.read()
+
+
+def _post_json(path, payload):
+    body = json.dumps(payload)
+    return _request("POST", path, body=body, headers={"Content-Type": "application/json"})
 
 
 class RunnerSmokeTests(unittest.TestCase):
@@ -47,15 +53,15 @@ class RunnerSmokeTests(unittest.TestCase):
         self.assertIn("default", names)
 
     def test_run_steps_report(self):
-        body = json.dumps(
+        status, _, raw = _post_json(
+            "/run",
             {
                 "task": "Open https://example.com and report the title.",
                 "url": "https://example.com",
                 "include_steps": True,
                 "include_step_screenshots": "paths",
-            }
+            },
         )
-        status, _, raw = _request("POST", "/run", body=body, headers={"Content-Type": "application/json"})
         self.assertEqual(status, 200)
         payload = json.loads(raw.decode("utf-8"))
         run_id = payload["run_id"]
@@ -80,16 +86,73 @@ class RunnerSmokeTests(unittest.TestCase):
         self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
         self.assertIn(b"<html", data.lower())
 
+    def test_interactive_run_live_view(self):
+        status, _, raw = _post_json(
+            "/run",
+            {
+                "task": "Open https://example.com and report the title.",
+                "url": "https://example.com",
+                "interactive": True,
+                "keep_open_seconds": 1,
+                "include_steps": False,
+            },
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(raw.decode("utf-8"))
+        live_view = payload.get("live_view")
+        self.assertIsInstance(live_view, dict)
+        self.assertEqual(live_view.get("display"), ":99")
+        self.assertIn("novnc_url", live_view)
+
+    def test_run_busy_when_parallel(self):
+        results = {}
+
+        def _run_long():
+            status, _, raw = _post_json(
+                "/run",
+                {
+                    "task": "Open https://example.com and wait.",
+                    "url": "https://example.com",
+                    "keep_open_seconds": 5,
+                    "include_steps": False,
+                },
+            )
+            results["status"] = status
+            results["raw"] = raw
+
+        thread = threading.Thread(target=_run_long, daemon=True)
+        thread.start()
+        time.sleep(0.5)
+
+        busy = False
+        deadline = time.time() + 6
+        while time.time() < deadline and not busy:
+            status, _, _ = _post_json(
+                "/run",
+                {
+                    "task": "Open https://example.com and report the title.",
+                    "url": "https://example.com",
+                    "include_steps": False,
+                },
+            )
+            busy = status == 429
+            if not busy:
+                time.sleep(0.5)
+
+        thread.join(timeout=30)
+        self.assertEqual(results.get("status"), 200)
+        self.assertTrue(busy, "expected 429 when another run is active")
+
     def test_jobs(self):
-        body = json.dumps(
+        status, _, raw = _post_json(
+            "/jobs",
             {
                 "task": "Open https://example.com and report the title.",
                 "url": "https://example.com",
                 "include_steps": True,
                 "include_step_screenshots": "paths",
-            }
+            },
         )
-        status, _, raw = _request("POST", "/jobs", body=body, headers={"Content-Type": "application/json"})
         self.assertEqual(status, 200)
         payload = json.loads(raw.decode("utf-8"))
         run_id = payload["run_id"]
@@ -108,6 +171,47 @@ class RunnerSmokeTests(unittest.TestCase):
         self.assertEqual(job.get("status"), "completed")
         response = job.get("response") or {}
         self.assertEqual(response.get("run_id"), run_id)
+
+    def test_jobs_busy_when_parallel(self):
+        status, _, raw = _post_json(
+            "/jobs",
+            {
+                "task": "Open https://example.com and report the title.",
+                "url": "https://example.com",
+                "include_steps": False,
+            },
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(raw.decode("utf-8"))
+        run_id = payload["run_id"]
+
+        busy = False
+        deadline = time.time() + 6
+        while time.time() < deadline and not busy:
+            status, _, _ = _post_json(
+                "/jobs",
+                {
+                    "task": "Open https://example.com and report the title.",
+                    "url": "https://example.com",
+                    "include_steps": False,
+                },
+            )
+            busy = status == 429
+            if not busy:
+                time.sleep(0.5)
+
+        self.assertTrue(busy, "expected 429 when a job is active")
+
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            status, _, raw = _request("GET", f"/jobs/{run_id}")
+            self.assertEqual(status, 200)
+            job = json.loads(raw.decode("utf-8"))
+            if job.get("status") in {"completed", "failed", "canceled"}:
+                break
+            time.sleep(2)
+        else:
+            self.fail("job did not finish before timeout")
 
     def test_cleanup_optional(self):
         if os.environ.get("RUN_TEST_CLEANUP") != "1":
