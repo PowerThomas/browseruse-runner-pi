@@ -72,6 +72,19 @@ Required env vars:
 Optional env vars:
 - `RUN_TEST_CLEANUP=1` enables `test_cleanup_optional`.
 - `RUN_TEST_PROFILE_MUTATION=1` enables `test_profile_clone_reset_optional`.
+- `RUN_TEST_REAL_SITES=1` enables `test_real_sites_optional`.
+
+Real-site test configuration:
+- `REAL_SITE_TESTS` must be a JSON array of objects with `url` and `task`.
+- Example:
+
+```
+REAL_SITE_TESTS='[
+  {"url":"https://example.com","task":"Open the page and report the title."},
+  {"url":"https://httpbin.org/forms/post","task":"Open the page and list the visible form fields."},
+  {"url":"https://www.iana.org/domains/reserved","task":"Open the page and report the first H1 text."}
+]'
+```
 
 Example:
 

@@ -9,6 +9,7 @@ import threading
 
 BASE_URL = os.environ.get("RUNNER_BASE_URL", "http://127.0.0.1:8000")
 API_KEY = os.environ.get("RUNNER_API_KEY")
+REAL_SITE_TESTS = os.environ.get("REAL_SITE_TESTS", "")
 
 
 def _request(method, path, body=None, headers=None):
@@ -250,6 +251,40 @@ class RunnerSmokeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(raw.decode("utf-8"))
         self.assertEqual(payload.get("profile"), profile_name)
+
+    def test_real_sites_optional(self):
+        if os.environ.get("RUN_TEST_REAL_SITES") != "1":
+            self.skipTest("RUN_TEST_REAL_SITES not set")
+        if not REAL_SITE_TESTS:
+            self.skipTest("REAL_SITE_TESTS not set")
+        try:
+            sites = json.loads(REAL_SITE_TESTS)
+        except json.JSONDecodeError as exc:
+            self.fail(f"REAL_SITE_TESTS must be JSON: {exc}")
+        if not isinstance(sites, list) or not sites:
+            self.fail("REAL_SITE_TESTS must be a non-empty list")
+
+        for entry in sites:
+            if not isinstance(entry, dict):
+                self.fail("REAL_SITE_TESTS entries must be objects")
+            url = entry.get("url")
+            task = entry.get("task")
+            if not url or not task:
+                self.fail("REAL_SITE_TESTS entries require url and task")
+
+            status, _, raw = _post_json(
+                "/run",
+                {
+                    "task": task,
+                    "url": url,
+                    "include_steps": True,
+                    "include_step_screenshots": "paths",
+                },
+            )
+            self.assertEqual(status, 200)
+            payload = json.loads(raw.decode("utf-8"))
+            steps = payload.get("steps") or []
+            self.assertTrue(len(steps) >= 1)
 
 
 if __name__ == "__main__":
