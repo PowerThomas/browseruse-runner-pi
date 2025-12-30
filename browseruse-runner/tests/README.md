@@ -82,7 +82,9 @@ Real-site test configuration:
 REAL_SITE_TESTS='[
   {"url":"https://example.com","task":"Open the page and report the title."},
   {"url":"https://httpbin.org/forms/post","task":"Open the page and list the visible form fields."},
-  {"url":"https://www.iana.org/domains/reserved","task":"Open the page and report the first H1 text."}
+  {"url":"https://www.iana.org/domains/reserved","task":"Open the page and report the first H1 text."},
+  {"url":"https://www.rfc-editor.org/","task":"Open the page and report the first visible headline."},
+  {"url":"https://www.wikipedia.org/","task":"Open the page and list the top language links."}
 ]'
 ```
 
