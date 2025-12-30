@@ -98,57 +98,9 @@ Returns `image/png` bytes for a step screenshot.
 - `200` with `content-type: image/png` if the file exists.
 - `404` if the screenshot is missing.
 
-## GET /runs/{run_id}/report
-
-Returns the generated HTML report for a run (`text/html`). The report uses
-per-step screenshot URLs instead of embedding base64 images.
-
-## POST /maintenance/cleanup
-
-Cleans old artifacts under `/app/artifacts`.
-
-Defaults:
-- `ARTIFACTS_MAX_DAYS=7`
-- `ARTIFACTS_MAX_RUNS=100`
-
-Response:
-
-```json
-{"deleted": 5, "kept": 100}
-```
-
-## Profile management
-
-- `GET /profiles` list profiles (name, last_modified, size_bytes)
-- `POST /profiles/{name}/reset` delete a profile
-- `POST /profiles/{name}/clone` with body `{"to":"newname"}`
-
-If Chrome is running in the container, profile actions return `409`.
-
-## Async jobs
-
-`/jobs` lets you start a run asynchronously while keeping the single-run lock:
-
-- `POST /jobs` with the same body as `/run`
-- `GET /jobs/{run_id}` returns status + response when done
-- `POST /jobs/{run_id}/cancel` best-effort cancel
-
 ## Health
 
 `GET /health` returns `{ "status": "ok" }`.
-
-## Tests
-
-Smoke tests live under `browseruse-runner/tests/` and can be run inside the
-runner container:
-
-```
-docker compose exec -T browseruse-runner python -m unittest /app/tests/test_api_smoke.py
-```
-
-Optional tests (destructive) can be enabled via env vars:
-- `RUN_TEST_CLEANUP=1` (creates old artifact dirs and runs cleanup)
-- `RUN_TEST_PROFILE_MUTATION=1` (clones/resets a test profile)
 
 ## n8n usage
 
@@ -161,11 +113,6 @@ Optional tests (destructive) can be enabled via env vars:
    - Enable "Download" to store the PNG in the binary output
 
 Each item will carry the step metadata and a binary screenshot for preview in n8n.
-
-To fetch the HTML report, add a HTTP Request node:
-- `GET /runs/{{$json.run_id}}/report`
-
-For async jobs, POST `/jobs` and poll `GET /jobs/{{$json.run_id}}` until `status` is `completed`.
 
 ## Live view (noVNC/VNC)
 
@@ -181,3 +128,37 @@ To view the live browser while a run is executing:
 ```
 ssh -L 7900:127.0.0.1:7900 pi@<your-pi-host>
 ```
+
+## Human-in-the-loop control
+
+Use these endpoints to pause a running agent, take over manually (via noVNC),
+and then resume with optional extra guidance.
+
+### GET /runs/{run_id}/status
+
+Returns status for a run or job. Example:
+
+```json
+{
+  "run_id": "uuid",
+  "status": "running",
+  "paused": false,
+  "step_number": 3
+}
+```
+
+### POST /runs/{run_id}/pause
+
+Pauses the active run (only works while the run is executing).
+
+### POST /runs/{run_id}/resume
+
+Resumes a paused run. Optionally include extra instructions:
+
+```json
+{
+  "text": "Use the company login on the top-right before continuing."
+}
+```
+
+If `text` is provided, it is appended as a follow-up user request before resuming.

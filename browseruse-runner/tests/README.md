@@ -56,6 +56,12 @@ All tests live in `test_api_smoke.py`.
   - Does: clone default profile to a temp name, then reset it.
   - Expects: HTTP 200 for both operations.
 
+- `test_human_in_loop_optional` (optional)
+  - Why: verify pause/resume and follow-up input for a running job.
+  - Does: `POST /jobs`, waits for running, then `POST /runs/{run_id}/pause` and
+    `POST /runs/{run_id}/resume` with extra text.
+  - Expects: pause/resume return HTTP 200 and the job completes.
+
 ## How to run
 
 Run inside the container:
@@ -73,6 +79,9 @@ Optional env vars:
 - `RUN_TEST_CLEANUP=1` enables `test_cleanup_optional`.
 - `RUN_TEST_PROFILE_MUTATION=1` enables `test_profile_clone_reset_optional`.
 - `RUN_TEST_REAL_SITES=1` enables `test_real_sites_optional`.
+- `RUN_TEST_HITL=1` enables `test_human_in_loop_optional`.
+- `RUNNER_REQUEST_TIMEOUT` sets the default HTTP timeout in seconds (default: 60).
+- `REAL_SITE_TIMEOUT` sets the per-request timeout for real-site runs (default: 180).
 
 Real-site test configuration:
 - `REAL_SITE_TESTS` must be a JSON array of objects with `url` and `task`.

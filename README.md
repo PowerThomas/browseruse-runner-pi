@@ -9,6 +9,7 @@ This repo contains only the runner service; it assumes n8n is already installed 
 - Supports async jobs with FIFO queue via `POST /jobs`
 - Persists run artifacts, per-step screenshots, and an HTML report
 - Exposes step list + per-step screenshot + report endpoints
+- Supports human-in-the-loop pause/resume during active runs
 - Includes artifact cleanup and profile management endpoints
 - Keeps API internal-only (Docker network) and protected by `X-API-Key`
 
@@ -110,6 +111,13 @@ Defaults:
 
 If a job is running, new jobs are queued and start automatically (FIFO).
 
+### Human-in-the-loop control
+
+- `GET /runs/{run_id}/status` returns status and pause state for active runs/jobs
+- `POST /runs/{run_id}/pause` pauses the current run
+- `POST /runs/{run_id}/resume` resumes a paused run
+  - Optional JSON body: `{"text":"additional guidance"}` to append a follow-up request
+
 ### Errors
 
 - `401 Unauthorized`: missing or invalid `X-API-Key`
@@ -150,6 +158,8 @@ docker compose exec -T browseruse-runner python -m unittest /app/tests/test_api_
 Optional tests (destructive) can be enabled via env vars:
 - `RUN_TEST_CLEANUP=1`
 - `RUN_TEST_PROFILE_MUTATION=1`
+- `RUN_TEST_REAL_SITES=1`
+- `RUN_TEST_HITL=1`
 
 ## License
 

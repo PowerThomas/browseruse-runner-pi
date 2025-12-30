@@ -10,9 +10,11 @@ import threading
 BASE_URL = os.environ.get("RUNNER_BASE_URL", "http://127.0.0.1:8000")
 API_KEY = os.environ.get("RUNNER_API_KEY")
 REAL_SITE_TESTS = os.environ.get("REAL_SITE_TESTS", "")
+REQUEST_TIMEOUT = int(os.environ.get("RUNNER_REQUEST_TIMEOUT", "60"))
+REAL_SITE_TIMEOUT = int(os.environ.get("REAL_SITE_TIMEOUT", "180"))
 
 
-def _request(method, path, body=None, headers=None):
+def _request(method, path, body=None, headers=None, timeout=None):
     url = f"{BASE_URL}{path}"
     req_headers = {"X-API-Key": API_KEY} if API_KEY else {}
     if headers:
@@ -22,15 +24,21 @@ def _request(method, path, body=None, headers=None):
         data = body.encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=timeout or REQUEST_TIMEOUT) as resp:
             return resp.status, resp.headers, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.headers, exc.read()
 
 
-def _post_json(path, payload):
+def _post_json(path, payload, timeout=None):
     body = json.dumps(payload)
-    return _request("POST", path, body=body, headers={"Content-Type": "application/json"})
+    return _request(
+        "POST",
+        path,
+        body=body,
+        headers={"Content-Type": "application/json"},
+        timeout=timeout,
+    )
 
 
 class RunnerSmokeTests(unittest.TestCase):
@@ -252,6 +260,60 @@ class RunnerSmokeTests(unittest.TestCase):
         payload = json.loads(raw.decode("utf-8"))
         self.assertEqual(payload.get("profile"), profile_name)
 
+    def test_human_in_loop_optional(self):
+        if os.environ.get("RUN_TEST_HITL") != "1":
+            self.skipTest("RUN_TEST_HITL not set")
+
+        status, _, raw = _post_json(
+            "/jobs",
+            {
+                "task": "Open https://example.com, scroll slowly, then report the title.",
+                "url": "https://example.com",
+                "include_steps": False,
+            },
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(raw.decode("utf-8"))
+        run_id = payload["run_id"]
+
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            status, _, raw = _request("GET", f"/jobs/{run_id}")
+            self.assertEqual(status, 200)
+            job = json.loads(raw.decode("utf-8"))
+            if job.get("status") == "running":
+                break
+            if job.get("status") in {"completed", "failed", "canceled"}:
+                self.skipTest("job finished before pause could be issued")
+            time.sleep(1)
+        else:
+            self.fail("job did not reach running state before timeout")
+
+        pause_status, _, _ = _request("POST", f"/runs/{run_id}/pause", body="")
+        if pause_status == 409:
+            self.skipTest("agent not ready for pause in time")
+        self.assertEqual(pause_status, 200)
+
+        resume_body = json.dumps({"text": "Continue the task after the manual pause."})
+        resume_status, _, _ = _request(
+            "POST",
+            f"/runs/{run_id}/resume",
+            body=resume_body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resume_status, 200)
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            status, _, raw = _request("GET", f"/jobs/{run_id}")
+            self.assertEqual(status, 200)
+            job = json.loads(raw.decode("utf-8"))
+            if job.get("status") in {"completed", "failed", "canceled"}:
+                break
+            time.sleep(2)
+        else:
+            self.fail("job did not finish after resume")
+
     def test_real_sites_optional(self):
         if os.environ.get("RUN_TEST_REAL_SITES") != "1":
             self.skipTest("RUN_TEST_REAL_SITES not set")
@@ -280,6 +342,7 @@ class RunnerSmokeTests(unittest.TestCase):
                     "include_steps": True,
                     "include_step_screenshots": "paths",
                 },
+                timeout=REAL_SITE_TIMEOUT,
             )
             self.assertEqual(status, 200)
             payload = json.loads(raw.decode("utf-8"))

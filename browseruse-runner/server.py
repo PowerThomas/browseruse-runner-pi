@@ -33,6 +33,8 @@ _job_lock_owner: Optional[str] = None
 _job_active_agents: Dict[str, Dict[str, Optional[Agent]]] = {}
 _job_canceled: set[str] = set()
 _job_queue: list[Dict[str, Any]] = []
+_active_run_id: Optional[str] = None
+_active_run_agent_ref: Optional[Dict[str, Optional[Agent]]] = None
 
 
 class RunRequest(BaseModel):
@@ -86,6 +88,10 @@ class RunResponse(BaseModel):
     result: Dict[str, Any]
     steps: Optional[list[StepInfo]] = None
     live_view: Optional[Dict[str, str]] = None
+
+
+class HumanInputRequest(BaseModel):
+    text: str = Field(..., description="Additional user guidance for the agent.")
 
 
 async def verify_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> None:
@@ -367,6 +373,24 @@ def _profile_size_bytes(profile_dir: Path) -> Optional[int]:
         return None
 
 
+def _get_active_agent(run_id: str) -> Optional[Agent]:
+    if _active_run_id == run_id and _active_run_agent_ref:
+        return _active_run_agent_ref.get("agent")
+    agent_ref = _job_active_agents.get(run_id)
+    if agent_ref:
+        return agent_ref.get("agent")
+    return None
+
+
+def _get_run_status(run_id: str) -> Optional[str]:
+    if _active_run_id == run_id:
+        return "running"
+    payload = _read_job_status(run_id)
+    if payload:
+        return payload.get("status")
+    return None
+
+
 def _job_file_path(run_id: str) -> Path:
     return ARTIFACTS_DIR / run_id / "job.json"
 
@@ -572,28 +596,30 @@ async def _run_browseruse_task(
                 step_screenshots=step_screenshots,
             )
 
-        result = await agent.run(on_step_end=on_step_end)
-        if active_agent_ref is not None:
-            active_agent_ref["agent"] = None
-        if req.keep_open_seconds > 0 and agent.browser_session is not None:
-            await asyncio.sleep(req.keep_open_seconds)
-            await agent.browser_session.kill()
-        if isinstance(result, AgentHistoryList):
-            for idx, item in enumerate(result.history, start=1):
-                if idx not in step_screenshots:
-                    await _persist_step_screenshot(
-                        agent=None,
-                        history_item=item,
-                        artifacts_path=artifacts_path,
-                        step_number=idx,
-                        step_screenshots=step_screenshots,
-                    )
-            return result.model_dump(), result, step_screenshots
-        if hasattr(result, "model_dump"):
-            return result.model_dump(), None, {}
-        if hasattr(result, "to_dict"):
-            return result.to_dict(), None, {}  # type: ignore[attr-defined]
-        return {"result": str(result)}, None, {}
+        try:
+            result = await agent.run(on_step_end=on_step_end)
+            if req.keep_open_seconds > 0 and agent.browser_session is not None:
+                await asyncio.sleep(req.keep_open_seconds)
+                await agent.browser_session.kill()
+            if isinstance(result, AgentHistoryList):
+                for idx, item in enumerate(result.history, start=1):
+                    if idx not in step_screenshots:
+                        await _persist_step_screenshot(
+                            agent=None,
+                            history_item=item,
+                            artifacts_path=artifacts_path,
+                            step_number=idx,
+                            step_screenshots=step_screenshots,
+                        )
+                return result.model_dump(), result, step_screenshots
+            if hasattr(result, "model_dump"):
+                return result.model_dump(), None, {}
+            if hasattr(result, "to_dict"):
+                return result.to_dict(), None, {}  # type: ignore[attr-defined]
+            return {"result": str(result)}, None, {}
+        finally:
+            if active_agent_ref is not None:
+                active_agent_ref["agent"] = None
     except Exception as exc:  # noqa: BLE001
         fallback = await _playwright_fallback(req, profile_path, artifacts_path)
         return {"error": f"browser_use execution failed: {exc}", "playwright": fallback}, None, {}
@@ -632,6 +658,7 @@ async def _playwright_fallback(
 async def run(
     req: RunRequest, _: None = Depends(verify_api_key)
 ) -> RunResponse:  # pragma: no cover - minimal service surface
+    global _active_run_id, _active_run_agent_ref
     if _lock.locked():
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -640,7 +667,15 @@ async def run(
     async with _lock:
         run_id = str(uuid.uuid4())
         profile_path, artifacts_path = _prepare_run_paths(req, run_id)
-        return await _build_run_response(req, run_id, profile_path, artifacts_path)
+        _active_run_id = run_id
+        _active_run_agent_ref = {"agent": None}
+        try:
+            return await _build_run_response(
+                req, run_id, profile_path, artifacts_path, active_agent_ref=_active_run_agent_ref
+            )
+        finally:
+            _active_run_id = None
+            _active_run_agent_ref = None
 
 
 @app.get("/runs/{run_id}/steps", response_model=list[StepInfo])
@@ -686,6 +721,60 @@ async def get_run_report(run_id: str, _: None = Depends(verify_api_key)) -> Resp
     if not report_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
     return FileResponse(report_path, media_type="text/html")
+
+
+@app.get("/runs/{run_id}/status")
+async def get_run_status(run_id: str, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    status_value = _get_run_status(run_id)
+    if status_value is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    agent = _get_active_agent(run_id)
+    payload: Dict[str, Any] = {"run_id": run_id, "status": status_value}
+    if agent is not None:
+        payload["paused"] = agent.state.paused
+        payload["step_number"] = agent.state.n_steps
+    return payload
+
+
+@app.post("/runs/{run_id}/pause")
+async def pause_run(run_id: str, _: None = Depends(verify_api_key)) -> Dict[str, str]:
+    status_value = _get_run_status(run_id)
+    if status_value is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if status_value in {"queued"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is queued")
+    if status_value in {"completed", "failed", "canceled"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run already finished")
+    agent = _get_active_agent(run_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is not ready")
+    if not agent.state.paused:
+        agent.pause()
+    return {"run_id": run_id, "status": "paused"}
+
+
+@app.post("/runs/{run_id}/resume")
+async def resume_run(
+    run_id: str,
+    req: Optional[HumanInputRequest] = None,
+    _: None = Depends(verify_api_key),
+) -> Dict[str, str]:
+    status_value = _get_run_status(run_id)
+    if status_value is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if status_value in {"queued"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is queued")
+    if status_value in {"completed", "failed", "canceled"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run already finished")
+    agent = _get_active_agent(run_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is not ready")
+    if req and not agent.state.paused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent is not paused")
+    if req:
+        agent.add_new_task(req.text)
+    agent.resume()
+    return {"run_id": run_id, "status": "running"}
 
 
 @app.post("/maintenance/cleanup")
