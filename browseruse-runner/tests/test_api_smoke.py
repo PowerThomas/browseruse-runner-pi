@@ -314,6 +314,59 @@ class RunnerSmokeTests(unittest.TestCase):
         else:
             self.fail("job did not finish after resume")
 
+    def test_human_in_loop_auto_pause_optional(self):
+        if os.environ.get("RUN_TEST_HITL_AUTO") != "1":
+            self.skipTest("RUN_TEST_HITL_AUTO not set")
+
+        status, _, raw = _post_json(
+            "/jobs",
+            {
+                "task": "Open https://example.com and report the title.",
+                "url": "https://example.com",
+                "include_steps": False,
+                "hitl": {
+                    "mode": "manual",
+                    "pause_on_action_types": ["navigate"],
+                },
+            },
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(raw.decode("utf-8"))
+        run_id = payload["run_id"]
+
+        deadline = time.time() + 60
+        paused = False
+        while time.time() < deadline and not paused:
+            status, _, raw = _request("GET", f"/runs/{run_id}/status")
+            self.assertEqual(status, 200)
+            run_status = json.loads(raw.decode("utf-8"))
+            paused = run_status.get("paused") is True
+            if not paused:
+                time.sleep(1)
+        if not paused:
+            self.fail("run did not auto-pause before timeout")
+
+        self.assertIn("pause_reason", run_status)
+        resume_body = json.dumps({"text": "Continue after auto-pause."})
+        resume_status, _, _ = _request(
+            "POST",
+            f"/runs/{run_id}/resume",
+            body=resume_body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resume_status, 200)
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            status, _, raw = _request("GET", f"/jobs/{run_id}")
+            self.assertEqual(status, 200)
+            job = json.loads(raw.decode("utf-8"))
+            if job.get("status") in {"completed", "failed", "canceled"}:
+                break
+            time.sleep(2)
+        else:
+            self.fail("job did not finish after auto-pause resume")
+
     def test_real_sites_optional(self):
         if os.environ.get("RUN_TEST_REAL_SITES") != "1":
             self.skipTest("RUN_TEST_REAL_SITES not set")

@@ -80,6 +80,7 @@ Optional env vars:
 - `RUN_TEST_PROFILE_MUTATION=1` enables `test_profile_clone_reset_optional`.
 - `RUN_TEST_REAL_SITES=1` enables `test_real_sites_optional`.
 - `RUN_TEST_HITL=1` enables `test_human_in_loop_optional`.
+- `RUN_TEST_HITL_AUTO=1` enables `test_human_in_loop_auto_pause_optional`.
 - `RUNNER_REQUEST_TIMEOUT` sets the default HTTP timeout in seconds (default: 60).
 - `REAL_SITE_TIMEOUT` sets the per-request timeout for real-site runs (default: 180).
 
