@@ -12,7 +12,6 @@ from typing import Any, Dict, Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from playwright.async_api import async_playwright
 from browser_use import Agent, ChatBrowserUse
 from browser_use.browser.profile import BrowserProfile
 from browser_use.agent.views import AgentHistoryList
@@ -35,6 +34,7 @@ _job_canceled: set[str] = set()
 _job_queue: list[Dict[str, Any]] = []
 _active_run_id: Optional[str] = None
 _active_run_agent_ref: Optional[Dict[str, Optional[Agent]]] = None
+_hitl_pause_info: Dict[str, Dict[str, str]] = {}
 
 
 class RunRequest(BaseModel):
@@ -67,6 +67,7 @@ class RunRequest(BaseModel):
         default="none",
         description="Include step screenshot file paths (none|paths).",
     )
+    hitl: Optional["HitlConfig"] = None
 
 
 class StepInfo(BaseModel):
@@ -90,8 +91,30 @@ class RunResponse(BaseModel):
     live_view: Optional[Dict[str, str]] = None
 
 
+class HitlConfig(BaseModel):
+    mode: Literal["off", "manual", "auto"] = Field(
+        default="off",
+        description="HITL mode: off, manual (no auto-pause), auto (pause on error patterns).",
+    )
+    pause_on_action_types: Optional[list[str]] = Field(
+        default=None,
+        description="Pause after steps that include any of these action types.",
+    )
+    pause_on_url_contains: Optional[list[str]] = Field(
+        default=None,
+        description="Pause if the current URL contains any of these substrings.",
+    )
+    pause_on_error_substrings: Optional[list[str]] = Field(
+        default=None,
+        description="Pause if an action error contains any of these substrings.",
+    )
+
+
 class HumanInputRequest(BaseModel):
     text: str = Field(..., description="Additional user guidance for the agent.")
+
+
+RunRequest.model_rebuild()
 
 
 async def verify_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")) -> None:
@@ -391,6 +414,77 @@ def _get_run_status(run_id: str) -> Optional[str]:
     return None
 
 
+def _extract_action_types(history_item: Any) -> list[str]:
+    action_types: list[str] = []
+    model_output = getattr(history_item, "model_output", None)
+    if not model_output or not getattr(model_output, "action", None):
+        return action_types
+    for action in model_output.action:
+        try:
+            payload = action.model_dump(exclude_none=True, mode="json")
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in payload.keys():
+            action_types.append(key)
+    return action_types
+
+
+def _extract_errors(history_item: Any) -> list[str]:
+    errors: list[str] = []
+    for result in getattr(history_item, "result", []) or []:
+        error = getattr(result, "error", None)
+        if error:
+            errors.append(str(error))
+    return errors
+
+
+def _should_pause_hitl(req: RunRequest, history_item: Any) -> Optional[Dict[str, str]]:
+    hitl = req.hitl
+    if not hitl or hitl.mode == "off":
+        return None
+
+    url = None
+    if getattr(history_item, "state", None):
+        url = getattr(history_item.state, "url", None)
+
+    if hitl.pause_on_url_contains and url:
+        for token in hitl.pause_on_url_contains:
+            if token and token in url:
+                return {"reason": "url_match", "message": f"Paused on URL match: {token}"}
+
+    action_types = _extract_action_types(history_item)
+    if hitl.pause_on_action_types:
+        for action_type in action_types:
+            if action_type in hitl.pause_on_action_types:
+                return {"reason": "action_match", "message": f"Paused on action: {action_type}"}
+
+    error_substrings = hitl.pause_on_error_substrings
+    if hitl.mode == "auto" and not error_substrings:
+        error_substrings = [
+            "login",
+            "sign in",
+            "captcha",
+            "credential",
+            "2fa",
+            "two factor",
+            "otp",
+            "verification code",
+            "authorize",
+            "approval",
+            "permission",
+        ]
+    if error_substrings:
+        for error in _extract_errors(history_item):
+            lowered = error.lower()
+            for token in error_substrings:
+                if token and token.lower() in lowered:
+                    return {"reason": "error_match", "message": f"Paused on error: {token}"}
+
+    return None
+
+
 def _job_file_path(run_id: str) -> Path:
     return ARTIFACTS_DIR / run_id / "job.json"
 
@@ -442,7 +536,7 @@ async def _build_run_response(
     active_agent_ref: Optional[Dict[str, Optional[Agent]]] = None,
 ) -> RunResponse:
     result, history, step_screenshots = await _run_browseruse_task(
-        req, profile_path, artifacts_path, active_agent_ref=active_agent_ref
+        req, run_id, profile_path, artifacts_path, active_agent_ref=active_agent_ref
     )
     steps: Optional[list[StepInfo]] = None
     live_view: Optional[Dict[str, str]] = None
@@ -527,6 +621,7 @@ async def _run_job_task(
         task = _job_tasks.pop(run_id, None)
         if task and task.cancelled():
             _job_canceled.discard(run_id)
+        _hitl_pause_info.pop(run_id, None)
         if _job_lock_owner == run_id and _lock.locked():
             _lock.release()
             _job_lock_owner = None
@@ -535,6 +630,7 @@ async def _run_job_task(
 
 async def _run_browseruse_task(
     req: RunRequest,
+    run_id: str,
     profile_path: Path,
     artifacts_path: Path,
     active_agent_ref: Optional[Dict[str, Optional[Agent]]] = None,
@@ -548,8 +644,7 @@ async def _run_browseruse_task(
     profile_path.mkdir(parents=True, exist_ok=True)
 
     if not BROWSER_USE_API_KEY:
-        fallback = await _playwright_fallback(req, profile_path, artifacts_path)
-        return {"error": "BROWSER_USE_API_KEY is not set", "playwright": fallback}, None, {}
+        return {"error": "BROWSER_USE_API_KEY is not set"}, None, {}
 
     # Lazy import to keep startup fast and allow easier troubleshooting.
     try:
@@ -595,6 +690,10 @@ async def _run_browseruse_task(
                 step_number=step_number,
                 step_screenshots=step_screenshots,
             )
+            pause_info = _should_pause_hitl(req, agent_instance.history.history[-1])
+            if pause_info:
+                _hitl_pause_info[run_id] = pause_info
+                agent_instance.pause()
 
         try:
             result = await agent.run(on_step_end=on_step_end)
@@ -621,37 +720,7 @@ async def _run_browseruse_task(
             if active_agent_ref is not None:
                 active_agent_ref["agent"] = None
     except Exception as exc:  # noqa: BLE001
-        fallback = await _playwright_fallback(req, profile_path, artifacts_path)
-        return {"error": f"browser_use execution failed: {exc}", "playwright": fallback}, None, {}
-
-
-async def _playwright_fallback(
-    req: RunRequest, profile_path: Path, artifacts_path: Path
-) -> Dict[str, Any]:
-    """Minimal Playwright warmup to keep profiles/artifacts active even if Browser Use fails."""
-    video_dir = artifacts_path / "video"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    trace_file = artifacts_path / "trace.zip"
-    async with async_playwright() as p:
-        browser = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path),
-            headless=True,
-            args=["--disable-dev-shm-usage", "--no-sandbox"],
-            record_video_dir=str(video_dir),
-        )
-        page = browser.pages[0] if browser.pages else await browser.new_page()
-        if req.record_trace:
-            await browser.tracing.start(screenshots=True, snapshots=True, sources=True)
-        if req.url:
-            await page.goto(req.url)
-        if req.record_trace:
-            await browser.tracing.stop(path=str(trace_file))
-        await browser.close()
-    return {
-        "opened_url": req.url,
-        "trace": str(trace_file) if req.record_trace else None,
-        "video_dir": str(video_dir),
-    }
+        return {"error": f"browser_use execution failed: {exc}"}, None, {}
 
 
 @app.post("/run", response_model=RunResponse)
@@ -676,6 +745,7 @@ async def run(
         finally:
             _active_run_id = None
             _active_run_agent_ref = None
+            _hitl_pause_info.pop(run_id, None)
 
 
 @app.get("/runs/{run_id}/steps", response_model=list[StepInfo])
@@ -733,6 +803,10 @@ async def get_run_status(run_id: str, _: None = Depends(verify_api_key)) -> Dict
     if agent is not None:
         payload["paused"] = agent.state.paused
         payload["step_number"] = agent.state.n_steps
+    pause_info = _hitl_pause_info.get(run_id)
+    if pause_info:
+        payload["pause_reason"] = pause_info.get("reason")
+        payload["pause_message"] = pause_info.get("message")
     return payload
 
 
@@ -774,6 +848,7 @@ async def resume_run(
     if req:
         agent.add_new_task(req.text)
     agent.resume()
+    _hitl_pause_info.pop(run_id, None)
     return {"run_id": run_id, "status": "running"}
 
 
@@ -878,6 +953,14 @@ async def get_job(run_id: str, _: None = Depends(verify_api_key)) -> Dict[str, A
     payload = _read_job_status(run_id)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if payload.get("status") == "running":
+        agent = _get_active_agent(run_id)
+        if agent is not None:
+            payload["paused"] = agent.state.paused
+            pause_info = _hitl_pause_info.get(run_id)
+            if pause_info:
+                payload["pause_reason"] = pause_info.get("reason")
+                payload["pause_message"] = pause_info.get("message")
     return payload
 
 

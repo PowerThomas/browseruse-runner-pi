@@ -126,6 +126,39 @@ Best-effort cancel. If a job is queued, it will be removed from the queue.
 Use these endpoints to pause a running agent, take over manually (via noVNC),
 then resume with extra guidance.
 
+### Auto-pause (agent requests help)
+
+`/run` and `/jobs` accept an optional `hitl` object to pause automatically on
+specific actions, URL patterns, or error keywords.
+
+Example (pause on login/captcha errors):
+
+```json
+{
+  "task": "Open https://example.com and log in.",
+  "interactive": true,
+  "hitl": {
+    "mode": "auto"
+  }
+}
+```
+
+Example (pause when a submit/click happens):
+
+```json
+{
+  "task": "Fill out the form and wait for my approval.",
+  "interactive": true,
+  "hitl": {
+    "mode": "manual",
+    "pause_on_action_types": ["click", "input"]
+  }
+}
+```
+
+When auto-pause triggers, `GET /runs/{run_id}/status` and `GET /jobs/{run_id}`
+include `paused`, `pause_reason`, and `pause_message`.
+
 ### GET /runs/{run_id}/status
 
 Returns status for a run or job. Example:

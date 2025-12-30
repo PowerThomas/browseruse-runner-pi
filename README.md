@@ -61,6 +61,10 @@ To fetch the HTML report, add a HTTP Request node:
 
 For async jobs, POST `/jobs` and poll `GET /jobs/{{$json.run_id}}` until `status` is `completed`.
 
+For human-in-the-loop automation, use `/jobs` and poll `/runs/{run_id}/status` or
+`/jobs/{run_id}` until `paused=true`, then prompt for input and call
+`POST /runs/{run_id}/resume` with the extra guidance.
+
 ## Configuration
 
 The runner reads these env vars:
