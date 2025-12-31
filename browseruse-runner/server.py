@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import html
 import json
 import os
@@ -11,13 +12,12 @@ from typing import Any, Dict, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-from browser_use import Agent, ChatBrowserUse
+from pydantic import BaseModel, Field, model_validator
+from browser_use import Agent
 from browser_use.browser.profile import BrowserProfile
 from browser_use.agent.views import AgentHistoryList
 
 RUNNER_API_KEY = os.environ.get("RUNNER_API_KEY")
-BROWSER_USE_API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 PROFILES_DIR = Path(os.environ.get("PROFILES_DIR", "/app/profiles"))
 ARTIFACTS_DIR = Path(os.environ.get("ARTIFACTS_DIR", "/app/artifacts"))
@@ -68,6 +68,7 @@ class RunRequest(BaseModel):
         description="Include step screenshot file paths (none|paths).",
     )
     hitl: Optional["HitlConfig"] = None
+    llm: Optional["LLMConfig"] = None
 
 
 class StepInfo(BaseModel):
@@ -108,6 +109,35 @@ class HitlConfig(BaseModel):
         default=None,
         description="Pause if an action error contains any of these substrings.",
     )
+
+
+class LLMConfig(BaseModel):
+    provider: Literal[
+        "browseruse",
+        "openai",
+        "azure",
+        "anthropic",
+        "google",
+        "mistral",
+        "groq",
+        "deepseek",
+        "cerebras",
+        "openrouter",
+        "vercel",
+        "ollama",
+    ] = Field(..., description="LLM provider supported by browser-use.")
+    model: Optional[str] = Field(
+        default=None, description="Provider-specific model name."
+    )
+    base_url: Optional[str] = Field(
+        default=None, description="Override provider base URL when supported."
+    )
+
+    @model_validator(mode="after")
+    def _validate_model(self) -> "LLMConfig":
+        if self.provider != "browseruse" and not self.model:
+            raise ValueError("llm.model is required for providers other than browseruse")
+        return self
 
 
 class HumanInputRequest(BaseModel):
@@ -414,6 +444,99 @@ def _get_run_status(run_id: str) -> Optional[str]:
     return None
 
 
+def _import_llm_class(provider: str) -> tuple[Optional[type], Optional[str]]:
+    mapping = {
+        "browseruse": ("browser_use.llm.browser_use.chat", "ChatBrowserUse"),
+        "openai": ("browser_use.llm.openai.chat", "ChatOpenAI"),
+        "azure": ("browser_use.llm.azure.chat", "ChatAzureOpenAI"),
+        "anthropic": ("browser_use.llm.anthropic.chat", "ChatAnthropic"),
+        "google": ("browser_use.llm.google.chat", "ChatGoogle"),
+        "mistral": ("browser_use.llm.mistral.chat", "ChatMistral"),
+        "groq": ("browser_use.llm.groq.chat", "ChatGroq"),
+        "deepseek": ("browser_use.llm.deepseek.chat", "ChatDeepSeek"),
+        "cerebras": ("browser_use.llm.cerebras.chat", "ChatCerebras"),
+        "openrouter": ("browser_use.llm.openrouter.chat", "ChatOpenRouter"),
+        "vercel": ("browser_use.llm.vercel.chat", "ChatVercel"),
+        "ollama": ("browser_use.llm.ollama.chat", "ChatOllama"),
+    }
+    module_path, class_name = mapping.get(provider, (None, None))
+    if not module_path or not class_name:
+        return None, f"Unsupported LLM provider: {provider}"
+    try:
+        module = __import__(module_path, fromlist=[class_name])
+        return getattr(module, class_name), None
+    except ModuleNotFoundError as exc:
+        return None, f"LLM provider '{provider}' dependency missing: {exc.name}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"LLM provider '{provider}' import failed: {exc}"
+
+
+def _build_llm_kwargs(llm_class: type, params: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        signature = inspect.signature(llm_class)
+    except Exception:  # noqa: BLE001
+        return params
+    allowed = set(signature.parameters.keys())
+    return {key: value for key, value in params.items() if key in allowed and value is not None}
+
+
+def _create_llm(req: RunRequest) -> tuple[Optional[Any], Optional[str]]:
+    llm_config = req.llm
+    provider = llm_config.provider if llm_config else "browseruse"
+    model = llm_config.model if llm_config else None
+    base_url = llm_config.base_url if llm_config else None
+
+    llm_class, error = _import_llm_class(provider)
+    if error:
+        return None, error
+
+    api_key_env = {
+        "browseruse": ["BROWSER_USE_API_KEY"],
+        "openai": ["OPENAI_API_KEY"],
+        "azure": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY"],
+        "anthropic": ["ANTHROPIC_API_KEY"],
+        "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "mistral": ["MISTRAL_API_KEY"],
+        "groq": ["GROQ_API_KEY"],
+        "deepseek": ["DEEPSEEK_API_KEY"],
+        "cerebras": ["CEREBRAS_API_KEY"],
+        "openrouter": ["OPENROUTER_API_KEY"],
+        "vercel": ["VERCEL_API_KEY"],
+    }
+
+    params: Dict[str, Any] = {}
+    if model:
+        params["model"] = model
+    if base_url:
+        params["base_url"] = base_url
+
+    if provider == "ollama":
+        params["host"] = base_url or os.environ.get("OLLAMA_HOST") or os.environ.get("OLLAMA_BASE_URL")
+    if provider == "azure":
+        params["azure_endpoint"] = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        params["azure_deployment"] = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+        params["api_version"] = os.environ.get("AZURE_OPENAI_API_VERSION")
+
+    env_candidates = api_key_env.get(provider)
+    if env_candidates:
+        api_key = next((os.environ.get(name) for name in env_candidates if os.environ.get(name)), None)
+        if not api_key:
+            return None, f"{env_candidates[0]} is not set"
+        params["api_key"] = api_key
+
+    if provider == "azure":
+        if not params.get("azure_endpoint") and not base_url:
+            return None, "AZURE_OPENAI_ENDPOINT is not set"
+        if not params.get("azure_deployment"):
+            return None, "AZURE_OPENAI_DEPLOYMENT is not set"
+
+    llm_kwargs = _build_llm_kwargs(llm_class, params)
+    try:
+        return llm_class(**llm_kwargs), None
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Failed to initialize LLM provider '{provider}': {exc}"
+
+
 def _extract_action_types(history_item: Any) -> list[str]:
     action_types: list[str] = []
     model_output = getattr(history_item, "model_output", None)
@@ -635,16 +758,13 @@ async def _run_browseruse_task(
     artifacts_path: Path,
     active_agent_ref: Optional[Dict[str, Optional[Agent]]] = None,
 ) -> tuple[Dict[str, Any], Optional[AgentHistoryList], Dict[int, Optional[str]]]:
-    """
-    Execute a Browser Use Agent run using the hosted LLM.
-    Falls back to a light Playwright warmup when Browser Use is unavailable so we still
-    produce trace/video artifacts.
-    """
+    """Execute a Browser Use Agent run using the selected LLM provider."""
     artifacts_path.mkdir(parents=True, exist_ok=True)
     profile_path.mkdir(parents=True, exist_ok=True)
 
-    if not BROWSER_USE_API_KEY:
-        return {"error": "BROWSER_USE_API_KEY is not set"}, None, {}
+    llm, llm_error = _create_llm(req)
+    if llm_error:
+        return {"error": llm_error}, None, {}
 
     # Lazy import to keep startup fast and allow easier troubleshooting.
     try:
@@ -654,8 +774,6 @@ async def _run_browseruse_task(
         for d in (video_dir, trace_dir, downloads_dir):
             d.mkdir(parents=True, exist_ok=True)
         profile_path.mkdir(parents=True, exist_ok=True)
-
-        llm = ChatBrowserUse()
 
         if req.interactive:
             os.environ.setdefault("DISPLAY", ":99")

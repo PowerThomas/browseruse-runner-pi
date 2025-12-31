@@ -181,6 +181,17 @@ class RunnerSmokeTests(unittest.TestCase):
         response = job.get("response") or {}
         self.assertEqual(response.get("run_id"), run_id)
 
+    def test_llm_requires_model(self):
+        status, _, _ = _post_json(
+            "/run",
+            {
+                "task": "Open https://example.com and report the title.",
+                "llm": {"provider": "openai"},
+                "include_steps": False,
+            },
+        )
+        self.assertEqual(status, 422)
+
     def test_jobs_busy_when_parallel(self):
         status, _, raw = _post_json(
             "/jobs",

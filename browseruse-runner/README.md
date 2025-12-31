@@ -51,7 +51,11 @@ Request body:
   "interactive": false,
   "keep_open_seconds": 0,
   "include_steps": true,
-  "include_step_screenshots": "paths"
+  "include_step_screenshots": "paths",
+  "llm": {
+    "provider": "browseruse",
+    "model": "bu-latest"
+  }
 }
 ```
 
@@ -64,6 +68,7 @@ Fields:
 - `keep_open_seconds` (int, default: `0`) keeps the browser open after completion
 - `include_steps` (bool, default: `true`)
 - `include_step_screenshots` (`none` or `paths`, default: `none`)
+- `llm` (object, optional) select an LLM provider + model (see below)
 
 Response (truncated):
 
@@ -91,6 +96,27 @@ Response (truncated):
 ```
 
 ## Steps and artifacts
+
+## LLM selection
+
+By default the runner uses Browser Use hosted models (`provider=browseruse`).
+To use other providers supported by your installed `browser_use` version, pass
+an `llm` object in `/run` or `/jobs`:
+
+```json
+{
+  "task": "Open https://example.com and report the title.",
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.openai.com/v1"
+  }
+}
+```
+
+`base_url` is optional and only used when supported by the selected provider.
+API keys must be provided via environment variables (see `.env.example`), never
+in the request payload.
 
 ### GET /runs/{run_id}/steps
 

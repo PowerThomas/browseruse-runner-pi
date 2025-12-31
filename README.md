@@ -37,6 +37,7 @@ cp .env.example .env
 
 - `RUNNER_API_KEY`: shared secret for all API calls
 - `BROWSER_USE_API_KEY`: your browser-use API key
+- Optional provider keys if you want to use non-browseruse LLMs (see `.env.example`)
 
 4) Start the runner
 
@@ -73,6 +74,24 @@ The runner reads these env vars:
 - `BROWSER_USE_API_KEY` (required)
 - `ARTIFACTS_MAX_DAYS` (optional, default 7)
 - `ARTIFACTS_MAX_RUNS` (optional, default 100)
+- Optional LLM provider keys and Azure/Ollama settings are documented in `.env.example`.
+
+## LLM selection
+
+You can choose a supported LLM provider per request using the `llm` object in
+`/run` and `/jobs`:
+
+```json
+{
+  "task": "Open https://example.com and report the title.",
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  }
+}
+```
+
+API keys must come from `.env` (never from the request body).
 
 ## Docker Compose notes
 

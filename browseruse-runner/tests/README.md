@@ -45,6 +45,11 @@ All tests live in `test_api_smoke.py`.
   - Does: `POST /jobs` twice; second should be queued; poll until both finish.
   - Expects: second job returns `status: queued`, both finish.
 
+- `test_llm_requires_model`
+  - Why: ensure LLM selection enforces a model for non-browseruse providers.
+  - Does: `POST /run` with `llm.provider=openai` and no model.
+  - Expects: HTTP 422 (validation error).
+
 - `test_cleanup_optional` (optional)
   - Why: verify artifact cleanup deletes old runs.
   - Does: creates fake old run dirs under `/app/artifacts`, then
