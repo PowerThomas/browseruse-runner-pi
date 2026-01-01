@@ -118,6 +118,10 @@ an `llm` object in `/run` or `/jobs`:
 API keys must be provided via environment variables (see `.env.example`), never
 in the request payload.
 
+### GET /llms
+
+Returns the supported providers and the required env vars (no secrets).
+
 ### GET /runs/{run_id}/steps
 
 Returns the saved step list for a run. Always includes `screenshot_file` when present.

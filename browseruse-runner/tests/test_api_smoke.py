@@ -61,6 +61,13 @@ class RunnerSmokeTests(unittest.TestCase):
         names = {item.get("name") for item in payload if isinstance(item, dict)}
         self.assertIn("default", names)
 
+    def test_llms_list(self):
+        status, _, body = _request("GET", "/llms")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        providers = payload.get("providers", [])
+        self.assertTrue(any(p.get("provider") == "google" for p in providers))
+
     def test_run_steps_report(self):
         status, _, raw = _post_json(
             "/run",

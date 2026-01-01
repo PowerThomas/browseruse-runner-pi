@@ -111,6 +111,7 @@ X-API-Key: <RUNNER_API_KEY>
 
 Common endpoints:
 - `POST /run`
+- `GET /llms`
 - `GET /runs/{run_id}/steps`
 - `GET /runs/{run_id}/steps/{step_number}/screenshot`
 - `GET /runs/{run_id}/report`

@@ -162,6 +162,11 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/llms")
+async def list_llms(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return {"providers": _llm_provider_specs()}
+
+
 def _get_run_dir(run_id: str) -> Path:
     run_dir = (ARTIFACTS_DIR / run_id).resolve()
     artifacts_root = ARTIFACTS_DIR.resolve()
@@ -535,6 +540,83 @@ def _create_llm(req: RunRequest) -> tuple[Optional[Any], Optional[str]]:
         return llm_class(**llm_kwargs), None
     except Exception as exc:  # noqa: BLE001
         return None, f"Failed to initialize LLM provider '{provider}': {exc}"
+
+
+def _llm_provider_specs() -> list[Dict[str, Any]]:
+    return [
+        {
+            "provider": "browseruse",
+            "requires_env": ["BROWSER_USE_API_KEY"],
+            "optional_env": ["BROWSER_USE_BASE_URL"],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "openai",
+            "requires_env": ["OPENAI_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "azure",
+            "requires_env": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"],
+            "optional_env": ["AZURE_OPENAI_API_VERSION"],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "anthropic",
+            "requires_env": ["ANTHROPIC_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "google",
+            "requires_env": ["GOOGLE_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": False,
+        },
+        {
+            "provider": "mistral",
+            "requires_env": ["MISTRAL_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "groq",
+            "requires_env": ["GROQ_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "deepseek",
+            "requires_env": ["DEEPSEEK_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "cerebras",
+            "requires_env": ["CEREBRAS_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "openrouter",
+            "requires_env": ["OPENROUTER_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "vercel",
+            "requires_env": ["VERCEL_API_KEY"],
+            "optional_env": [],
+            "supports_base_url": True,
+        },
+        {
+            "provider": "ollama",
+            "requires_env": [],
+            "optional_env": ["OLLAMA_HOST"],
+            "supports_base_url": True,
+        },
+    ]
 
 
 def _extract_action_types(history_item: Any) -> list[str]:

@@ -18,6 +18,11 @@ All tests live in `test_api_smoke.py`.
   - Does: `GET /profiles`.
   - Expects: HTTP 200 and list containing `default`.
 
+- `test_llms_list`
+  - Why: verify the LLM provider registry endpoint.
+  - Does: `GET /llms`.
+  - Expects: HTTP 200 and provider list includes `google`.
+
 - `test_run_steps_report`
   - Why: validate the main sync run flow and report generation.
   - Does: `POST /run`, then `GET /runs/{run_id}/steps`,
